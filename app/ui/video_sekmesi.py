@@ -37,6 +37,8 @@ class VideoSekmesi(SekmeDuzeni):
         self.bitis_var = tk.StringVar(value="")
         self.genislik_var = tk.StringVar(value="")
         self.yukseklik_var = tk.StringVar(value="")
+        self.fade_in_var = tk.StringVar(value="0")
+        self.fade_out_var = tk.StringVar(value="0")
         self.sesi_kapat_var = tk.BooleanVar(value=False)
         self.ses_seviyesi_var = tk.IntVar(value=100)
 
@@ -44,6 +46,7 @@ class VideoSekmesi(SekmeDuzeni):
         self._video_playeri_kur()
         self._timeline_kur()
         self._trim_izleyicileri_bagla()
+        self._fade_izleyicileri_bagla()
         self._goster_statik_onizleme()
         self.onizleme_tuvali.bind("<Configure>", self._onizleme_yenile)
 
@@ -85,7 +88,7 @@ class VideoSekmesi(SekmeDuzeni):
 
         ses_kutu = ttk.LabelFrame(self.arac_paneli, text="Ses Ayarı", style="Panel.TLabelframe")
         ses_kutu.grid(row=4, column=0, sticky="ew", pady=(0, 12))
-        ses_kutu.columnconfigure(0, weight=1)
+        ses_kutu.columnconfigure((0, 1), weight=1)
         ttk.Label(ses_kutu, text="Ses Seviyesi", style="Genel.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(ses_kutu, textvariable=self.ses_seviyesi_metin, style="Genel.TLabel").grid(
             row=0, column=1, sticky="e"
@@ -99,13 +102,21 @@ class VideoSekmesi(SekmeDuzeni):
         )
         self.ses_seviyesi_slider.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 8))
         self.ses_seviyesi_slider.set(self.ses_seviyesi_var.get())
+
+        ttk.Label(ses_kutu, text="Fade In (sn)", style="Genel.TLabel").grid(row=2, column=0, sticky="w")
+        ttk.Label(ses_kutu, text="Fade Out (sn)", style="Genel.TLabel").grid(row=2, column=1, sticky="w")
+        self.fade_in_entry = ttk.Entry(ses_kutu, textvariable=self.fade_in_var, style="Karanlik.TEntry", width=10)
+        self.fade_in_entry.grid(row=3, column=0, sticky="ew", padx=(0, 6), pady=(4, 8))
+        self.fade_out_entry = ttk.Entry(ses_kutu, textvariable=self.fade_out_var, style="Karanlik.TEntry", width=10)
+        self.fade_out_entry.grid(row=3, column=1, sticky="ew", pady=(4, 8))
+
         self.ses_checkbox = ttk.Checkbutton(
             ses_kutu,
             text="Videoyu sessiz dışa aktar",
             variable=self.sesi_kapat_var,
             style="Switch.TCheckbutton",
         )
-        self.ses_checkbox.grid(row=2, column=0, columnspan=2, sticky="w")
+        self.ses_checkbox.grid(row=4, column=0, columnspan=2, sticky="w")
 
         bilgi_kutu = ttk.LabelFrame(self.arac_paneli, text="Video Bilgisi", style="Panel.TLabelframe")
         bilgi_kutu.grid(row=5, column=0, sticky="ew")
@@ -134,6 +145,8 @@ class VideoSekmesi(SekmeDuzeni):
             self.genislik_entry,
             self.yukseklik_entry,
             self.ses_seviyesi_slider,
+            self.fade_in_entry,
+            self.fade_out_entry,
             self.ses_checkbox,
         ]
 
@@ -182,6 +195,13 @@ class VideoSekmesi(SekmeDuzeni):
         self.baslangic_var.trace_add("write", self._trim_girdileri_degisti)
         self.bitis_var.trace_add("write", self._trim_girdileri_degisti)
 
+    def _fade_izleyicileri_bagla(self) -> None:
+        self.fade_in_var.trace_add("write", self._fade_onizleme_degisti)
+        self.fade_out_var.trace_add("write", self._fade_onizleme_degisti)
+
+    def _fade_onizleme_degisti(self, *_args) -> None:
+        self._uygula_onizleme_ses_zarfi()
+
     def _ses_seviyesi_degisti(self, deger: str) -> None:
         try:
             ses_seviyesi = int(round(float(deger)))
@@ -190,8 +210,63 @@ class VideoSekmesi(SekmeDuzeni):
         ses_seviyesi = max(0, min(ses_seviyesi, 200))
         self.ses_seviyesi_var.set(ses_seviyesi)
         self.ses_seviyesi_metin.set(f"{ses_seviyesi}%")
-        if self.video_player.controller.state.is_loaded:
-            self.video_player.set_volume(ses_seviyesi)
+        self._uygula_onizleme_ses_zarfi()
+
+    def _fade_degerlerini_al(self, *, strict: bool) -> tuple[float, float]:
+        return (
+            self._tek_fade_degeri_al(self.fade_in_var.get(), "Fade In", strict=strict),
+            self._tek_fade_degeri_al(self.fade_out_var.get(), "Fade Out", strict=strict),
+        )
+
+    def _tek_fade_degeri_al(self, ham_deger: str, alan_adi: str, *, strict: bool) -> float:
+        metin = ham_deger.strip()
+        if not metin:
+            return 0.0
+        try:
+            deger = float(metin)
+        except ValueError:
+            if strict:
+                raise ValueError(f"{alan_adi} alanına geçerli sayı girin.")
+            return 0.0
+        if deger < 0:
+            if strict:
+                raise ValueError(f"{alan_adi} negatif olamaz.")
+            return 0.0
+        return deger
+
+    def _uygula_onizleme_ses_zarfi(self) -> None:
+        if not self.video_player.controller.state.is_loaded:
+            return
+
+        taban_ses = self.ses_seviyesi_var.get()
+        fade_in, fade_out = self._fade_degerlerini_al(strict=False)
+        mevcut_zaman = self.video_player.controller.state.current_time
+        toplam_sure = self.video_player.controller.state.total_duration or self.timeline.duration
+
+        try:
+            baslangic = float(self.baslangic_var.get().strip() or "0")
+        except ValueError:
+            baslangic = 0.0
+
+        try:
+            bitis = float(self.bitis_var.get().strip()) if self.bitis_var.get().strip() else toplam_sure
+        except ValueError:
+            bitis = toplam_sure
+
+        bitis = max(baslangic, min(bitis, toplam_sure if toplam_sure > 0 else bitis))
+        clip_suresi = max(bitis - baslangic, 0.0)
+        fade_in = min(fade_in, clip_suresi)
+        fade_out = min(fade_out, clip_suresi)
+
+        ses_katsayisi = 1.0
+        if fade_in > 0 and baslangic <= mevcut_zaman <= baslangic + fade_in:
+            ses_katsayisi = min(ses_katsayisi, max(0.0, (mevcut_zaman - baslangic) / fade_in))
+        if fade_out > 0 and bitis - fade_out <= mevcut_zaman <= bitis:
+            ses_katsayisi = min(ses_katsayisi, max(0.0, (bitis - mevcut_zaman) / fade_out))
+        if mevcut_zaman > bitis and fade_out > 0:
+            ses_katsayisi = 0.0
+
+        self.video_player.set_volume(int(round(taban_ses * ses_katsayisi)))
 
     def _clip_bol(self) -> None:
         """Split the selected clip at the current playhead position."""
@@ -257,6 +332,7 @@ class VideoSekmesi(SekmeDuzeni):
         if self.video_servisi.video_var_mi() and self.video_player.controller.state.is_loaded:
             self.video_player.controller.seek(baslangic)
             self.timeline.update_scrubber(baslangic)
+            self._uygula_onizleme_ses_zarfi()
 
     def _trim_girdileri_degisti(self, *_args) -> None:
         """Push left-side trim input changes back into the timeline."""
@@ -293,6 +369,7 @@ class VideoSekmesi(SekmeDuzeni):
         """Forward player shell status and keep timeline synced to playback state."""
         if hasattr(self, "timeline") and hasattr(self, "video_player"):
             self.timeline.update_scrubber(self.video_player.controller.state.current_time)
+            self._uygula_onizleme_ses_zarfi()
         if self.video_servisi.video_var_mi():
             self.durum_guncelle(mesaj)
 
@@ -327,6 +404,8 @@ class VideoSekmesi(SekmeDuzeni):
         self.bitis_var.set(str(bilgiler["sure"]))
         self.genislik_var.set("")
         self.yukseklik_var.set("")
+        self.fade_in_var.set("0")
+        self.fade_out_var.set("0")
         self.sesi_kapat_var.set(False)
         self.ses_seviyesi_var.set(100)
         self.ses_seviyesi_slider.set(100)
@@ -340,7 +419,7 @@ class VideoSekmesi(SekmeDuzeni):
         self.timeline.set_clip(float(bilgiler["sure"]))
         self.timeline.update_scrubber(0.0)
         self.video_player.load_video(dosya_yolu, duration=float(bilgiler["sure"]))
-        self.video_player.set_volume(self.ses_seviyesi_var.get())
+        self._uygula_onizleme_ses_zarfi()
         self._goster_video_player()
         self.durum_guncelle("Video açıldı. Trim ve dışa aktarma ayarları hazır.")
 
@@ -371,8 +450,9 @@ class VideoSekmesi(SekmeDuzeni):
         try:
             baslangic = float(self.baslangic_var.get() or "0")
             bitis = float(self.bitis_var.get()) if self.bitis_var.get().strip() else None
-        except ValueError:
-            self._hata_goster("Trim alanlarına geçerli sayı girin.")
+            fade_in, fade_out = self._fade_degerlerini_al(strict=True)
+        except ValueError as hata:
+            self._hata_goster(str(hata))
             return
 
         try:
@@ -395,6 +475,8 @@ class VideoSekmesi(SekmeDuzeni):
                 yukseklik,
                 self.sesi_kapat_var.get(),
                 self.ses_seviyesi_var.get(),
+                fade_in,
+                fade_out,
             ),
             daemon=True,
         )
@@ -410,6 +492,8 @@ class VideoSekmesi(SekmeDuzeni):
         yukseklik: int | None,
         sesi_kapat: bool,
         ses_seviyesi: int,
+        fade_in: float,
+        fade_out: float,
     ) -> None:
         try:
             self.video_servisi.disa_aktar(
@@ -420,6 +504,8 @@ class VideoSekmesi(SekmeDuzeni):
                 yukseklik=yukseklik,
                 sesi_kapat=sesi_kapat,
                 ses_seviyesi=ses_seviyesi,
+                fade_in=fade_in,
+                fade_out=fade_out,
             )
         except Exception as hata:  # pragma: no cover - arayuz hatasi
             self.export_kuyrugu.put(("hata", str(hata)))
