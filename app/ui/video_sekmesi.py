@@ -131,7 +131,7 @@ class VideoSekmesi(SekmeDuzeni):
     def _timeline_kur(self) -> None:
         """Create the passive timeline below the preview area."""
         self.onizleme_paneli.rowconfigure(2, weight=0)
-        self.timeline = TimelineWidget(self.onizleme_paneli)
+        self.timeline = TimelineWidget(self.onizleme_paneli, on_trim_changed=self._timeline_trim_guncelle)
         self.timeline.grid(row=2, column=0, sticky="ew", pady=(12, 0))
 
     def _goster_video_player(self) -> None:
@@ -148,6 +148,11 @@ class VideoSekmesi(SekmeDuzeni):
         self.onizleme_tuvali.grid(row=0, column=0, sticky="nsew")
         self.onizleme_y_kaydirma.grid(row=0, column=1, sticky="ns")
         self.onizleme_x_kaydirma.grid(row=1, column=0, sticky="ew")
+
+    def _timeline_trim_guncelle(self, baslangic: float, bitis: float) -> None:
+        """Sync timeline trim handles into the left-side trim inputs."""
+        self.baslangic_var.set(f"{baslangic:.2f}".rstrip("0").rstrip("."))
+        self.bitis_var.set(f"{bitis:.2f}".rstrip("0").rstrip("."))
 
     def _video_player_durumu_guncelle(self, mesaj: str) -> None:
         """Forward player shell status and keep timeline synced to playback state."""
