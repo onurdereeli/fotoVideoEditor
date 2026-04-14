@@ -24,22 +24,26 @@ class VideoSekmesi(SekmeDuzeni):
         self.export_thread: threading.Thread | None = None
         self.disa_aktariliyor = False
         self.kontrol_bilesenleri: list[ttk.Widget] = []
+        self._trim_sync_locked = False
 
         self.dosya_metin = tk.StringVar(value="Dosya: -")
         self.sure_metin = tk.StringVar(value="Süre: -")
         self.cozunurluk_metin = tk.StringVar(value="Çözünürlük: -")
         self.fps_metin = tk.StringVar(value="Kare Hızı: -")
         self.ses_metin = tk.StringVar(value="Ses: -")
+        self.ses_seviyesi_metin = tk.StringVar(value="100%")
 
         self.baslangic_var = tk.StringVar(value="0")
         self.bitis_var = tk.StringVar(value="")
         self.genislik_var = tk.StringVar(value="")
         self.yukseklik_var = tk.StringVar(value="")
         self.sesi_kapat_var = tk.BooleanVar(value=False)
+        self.ses_seviyesi_var = tk.IntVar(value=100)
 
         self._icerik_kur()
         self._video_playeri_kur()
         self._timeline_kur()
+        self._trim_izleyicileri_bagla()
         self._goster_statik_onizleme()
         self.onizleme_tuvali.bind("<Configure>", self._onizleme_yenile)
 
@@ -82,13 +86,26 @@ class VideoSekmesi(SekmeDuzeni):
         ses_kutu = ttk.LabelFrame(self.arac_paneli, text="Ses Ayarı", style="Panel.TLabelframe")
         ses_kutu.grid(row=4, column=0, sticky="ew", pady=(0, 12))
         ses_kutu.columnconfigure(0, weight=1)
+        ttk.Label(ses_kutu, text="Ses Seviyesi", style="Genel.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(ses_kutu, textvariable=self.ses_seviyesi_metin, style="Genel.TLabel").grid(
+            row=0, column=1, sticky="e"
+        )
+        self.ses_seviyesi_slider = ttk.Scale(
+            ses_kutu,
+            from_=0,
+            to=200,
+            orient="horizontal",
+            command=self._ses_seviyesi_degisti,
+        )
+        self.ses_seviyesi_slider.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 8))
+        self.ses_seviyesi_slider.set(self.ses_seviyesi_var.get())
         self.ses_checkbox = ttk.Checkbutton(
             ses_kutu,
             text="Videoyu sessiz dışa aktar",
             variable=self.sesi_kapat_var,
             style="Switch.TCheckbutton",
         )
-        self.ses_checkbox.grid(row=0, column=0, sticky="w")
+        self.ses_checkbox.grid(row=2, column=0, columnspan=2, sticky="w")
 
         bilgi_kutu = ttk.LabelFrame(self.arac_paneli, text="Video Bilgisi", style="Panel.TLabelframe")
         bilgi_kutu.grid(row=5, column=0, sticky="ew")
@@ -116,6 +133,7 @@ class VideoSekmesi(SekmeDuzeni):
             self.bitis_entry,
             self.genislik_entry,
             self.yukseklik_entry,
+            self.ses_seviyesi_slider,
             self.ses_checkbox,
         ]
 
@@ -129,10 +147,88 @@ class VideoSekmesi(SekmeDuzeni):
         self.video_player.grid_remove()
 
     def _timeline_kur(self) -> None:
-        """Create the passive timeline below the preview area."""
+        """Create timeline controls and passive timeline below the preview area."""
         self.onizleme_paneli.rowconfigure(2, weight=0)
-        self.timeline = TimelineWidget(self.onizleme_paneli, on_trim_changed=self._timeline_trim_guncelle)
-        self.timeline.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+
+        self.timeline_kontrol_alani = ttk.Frame(self.onizleme_paneli, style="Panel.TFrame")
+        self.timeline_kontrol_alani.grid(row=2, column=0, sticky="ew", pady=(12, 6))
+        self.timeline_kontrol_alani.columnconfigure(3, weight=1)
+
+        self.split_butonu = buton(self.timeline_kontrol_alani, "Split at Playhead", self._clip_bol)
+        self.split_butonu.grid(row=0, column=0, sticky="w", padx=(0, 8))
+
+        self.clip_sil_butonu = buton(
+            self.timeline_kontrol_alani,
+            "Delete Selected Clip",
+            self._secili_clipi_sil,
+        )
+        self.clip_sil_butonu.grid(row=0, column=1, sticky="w", padx=(0, 8))
+
+        self.timeline_sifirla_butonu = buton(
+            self.timeline_kontrol_alani,
+            "Reset Timeline",
+            self._timeline_sifirla,
+        )
+        self.timeline_sifirla_butonu.grid(row=0, column=2, sticky="w")
+
+        self.timeline = TimelineWidget(
+            self.onizleme_paneli,
+            on_trim_changed=self._timeline_trim_guncelle,
+            thumbnail_provider=self.video_servisi.onizleme_karesi_al,
+        )
+        self.timeline.grid(row=3, column=0, sticky="ew", pady=(0, 0))
+
+    def _trim_izleyicileri_bagla(self) -> None:
+        self.baslangic_var.trace_add("write", self._trim_girdileri_degisti)
+        self.bitis_var.trace_add("write", self._trim_girdileri_degisti)
+
+    def _ses_seviyesi_degisti(self, deger: str) -> None:
+        try:
+            ses_seviyesi = int(round(float(deger)))
+        except ValueError:
+            return
+        ses_seviyesi = max(0, min(ses_seviyesi, 200))
+        self.ses_seviyesi_var.set(ses_seviyesi)
+        self.ses_seviyesi_metin.set(f"{ses_seviyesi}%")
+        if self.video_player.controller.state.is_loaded:
+            self.video_player.set_volume(ses_seviyesi)
+
+    def _clip_bol(self) -> None:
+        """Split the selected clip at the current playhead position."""
+        if not self.video_servisi.video_var_mi():
+            self._hata_goster("Önce bir video açmalısınız.")
+            return
+
+        playhead = self.video_player.controller.state.current_time
+        if not self.timeline.split_at(playhead):
+            self.durum_guncelle("Clip, mevcut oynatma konumunda bölünemedi.")
+            return
+
+        self._timeline_trim_guncelle(self.timeline.get_trim_start(), self.timeline.get_trim_end())
+        self.durum_guncelle(f"Clip {playhead:.2f} saniyede bölündü.")
+
+    def _secili_clipi_sil(self) -> None:
+        """Delete the selected clip while keeping at least one clip on the timeline."""
+        if not self.video_servisi.video_var_mi():
+            self._hata_goster("Önce bir video açmalısınız.")
+            return
+
+        if not self.timeline.delete_selected_clip():
+            self.durum_guncelle("En az bir clip kalmalıdır; seçili clip silinemedi.")
+            return
+
+        self._timeline_trim_guncelle(self.timeline.get_trim_start(), self.timeline.get_trim_end())
+        self.durum_guncelle("Seçili clip silindi.")
+
+    def _timeline_sifirla(self) -> None:
+        """Reset split and trim edits back to the original single-clip state."""
+        if not self.video_servisi.video_var_mi():
+            self._hata_goster("Önce bir video açmalısınız.")
+            return
+
+        self.timeline.reset()
+        self._timeline_trim_guncelle(self.timeline.get_trim_start(), self.timeline.get_trim_end())
+        self.durum_guncelle("Timeline sıfırlandı; tek clip görünümüne dönüldü.")
 
     def _goster_video_player(self) -> None:
         self.onizleme_tuvali.grid_remove()
@@ -150,9 +246,48 @@ class VideoSekmesi(SekmeDuzeni):
         self.onizleme_x_kaydirma.grid(row=1, column=0, sticky="ew")
 
     def _timeline_trim_guncelle(self, baslangic: float, bitis: float) -> None:
-        """Sync timeline trim handles into the left-side trim inputs."""
-        self.baslangic_var.set(f"{baslangic:.2f}".rstrip("0").rstrip("."))
-        self.bitis_var.set(f"{bitis:.2f}".rstrip("0").rstrip("."))
+        """Sync selected clip bounds into trim inputs and player position."""
+        self._trim_sync_locked = True
+        try:
+            self.baslangic_var.set(f"{baslangic:.2f}".rstrip("0").rstrip("."))
+            self.bitis_var.set(f"{bitis:.2f}".rstrip("0").rstrip("."))
+        finally:
+            self._trim_sync_locked = False
+
+        if self.video_servisi.video_var_mi() and self.video_player.controller.state.is_loaded:
+            self.video_player.controller.seek(baslangic)
+            self.timeline.update_scrubber(baslangic)
+
+    def _trim_girdileri_degisti(self, *_args) -> None:
+        """Push left-side trim input changes back into the timeline."""
+        if self._trim_sync_locked or not hasattr(self, "timeline"):
+            return
+        if self.timeline.duration <= 0:
+            return
+
+        try:
+            baslangic = float(self.baslangic_var.get().strip() or "0")
+            bitis = float(self.bitis_var.get().strip()) if self.bitis_var.get().strip() else self.timeline.duration
+        except ValueError:
+            return
+
+        if baslangic < 0:
+            baslangic = 0.0
+        if bitis > self.timeline.duration:
+            bitis = self.timeline.duration
+        if baslangic >= bitis:
+            return
+
+        self.timeline.set_trim(baslangic, bitis)
+
+    def _sync_timeline_trim_to_inputs(self) -> None:
+        """Ensure export uses the latest trim values coming from the timeline."""
+        if not hasattr(self, "timeline"):
+            return
+        self._timeline_trim_guncelle(
+            self.timeline.get_trim_start(),
+            self.timeline.get_trim_end(),
+        )
 
     def _video_player_durumu_guncelle(self, mesaj: str) -> None:
         """Forward player shell status and keep timeline synced to playback state."""
@@ -190,16 +325,22 @@ class VideoSekmesi(SekmeDuzeni):
 
         self.baslangic_var.set("0")
         self.bitis_var.set(str(bilgiler["sure"]))
+        self.genislik_var.set("")
+        self.yukseklik_var.set("")
+        self.sesi_kapat_var.set(False)
+        self.ses_seviyesi_var.set(100)
+        self.ses_seviyesi_slider.set(100)
+        self.ses_seviyesi_metin.set("100%")
         cozunurluk = str(bilgiler["cozunurluk"]).split(" x ")
         if len(cozunurluk) == 2:
             self.genislik_var.set(cozunurluk[0])
             self.yukseklik_var.set(cozunurluk[1])
-        self.sesi_kapat_var.set(False)
         self._bilgileri_guncelle()
         self._onizleme_yenile()
         self.timeline.set_clip(float(bilgiler["sure"]))
         self.timeline.update_scrubber(0.0)
         self.video_player.load_video(dosya_yolu, duration=float(bilgiler["sure"]))
+        self.video_player.set_volume(self.ses_seviyesi_var.get())
         self._goster_video_player()
         self.durum_guncelle("Video açıldı. Trim ve dışa aktarma ayarları hazır.")
 
@@ -211,6 +352,7 @@ class VideoSekmesi(SekmeDuzeni):
             self._hata_goster("Bu işlemi yapabilmek için önce bir video açmalısınız.")
             return
 
+        self._sync_timeline_trim_to_inputs()
         self.durum_guncelle("Dışa aktarma konumu seçiliyor...")
         hedef_yol = filedialog.asksaveasfilename(
             title="Videoyu Dışa Aktar",
@@ -245,7 +387,15 @@ class VideoSekmesi(SekmeDuzeni):
 
         self.export_thread = threading.Thread(
             target=self._disa_aktar_is_parcasi,
-            args=(hedef_yol, baslangic, bitis, genislik, yukseklik, self.sesi_kapat_var.get()),
+            args=(
+                hedef_yol,
+                baslangic,
+                bitis,
+                genislik,
+                yukseklik,
+                self.sesi_kapat_var.get(),
+                self.ses_seviyesi_var.get(),
+            ),
             daemon=True,
         )
         self.export_thread.start()
@@ -259,6 +409,7 @@ class VideoSekmesi(SekmeDuzeni):
         genislik: int | None,
         yukseklik: int | None,
         sesi_kapat: bool,
+        ses_seviyesi: int,
     ) -> None:
         try:
             self.video_servisi.disa_aktar(
@@ -268,6 +419,7 @@ class VideoSekmesi(SekmeDuzeni):
                 genislik=genislik,
                 yukseklik=yukseklik,
                 sesi_kapat=sesi_kapat,
+                ses_seviyesi=ses_seviyesi,
             )
         except Exception as hata:  # pragma: no cover - arayuz hatasi
             self.export_kuyrugu.put(("hata", str(hata)))

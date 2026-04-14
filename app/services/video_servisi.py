@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
@@ -59,6 +59,7 @@ class VideoServisi:
         genislik: int | None,
         yukseklik: int | None,
         sesi_kapat: bool,
+        ses_seviyesi: int = 100,
     ) -> None:
         klip = self._klip_getir()
         toplam_sure = float(klip.duration)
@@ -85,11 +86,22 @@ class VideoServisi:
             else:
                 calisma_klibi = calisma_klibi.resized(new_size=(genislik, yukseklik))
 
-        if sesi_kapat:
+        ses_seviyesi = max(0, min(int(ses_seviyesi), 200))
+        if sesi_kapat or ses_seviyesi == 0:
             calisma_klibi = calisma_klibi.without_audio()
+        elif ses_seviyesi != 100 and calisma_klibi.audio is not None:
+            katsayi = ses_seviyesi / 100.0
+            if hasattr(calisma_klibi, "volumex"):
+                calisma_klibi = calisma_klibi.volumex(katsayi)
+            elif hasattr(calisma_klibi, "with_volume_scaled"):
+                calisma_klibi = calisma_klibi.with_volume_scaled(katsayi)
+            elif hasattr(calisma_klibi.audio, "volumex") and hasattr(calisma_klibi, "set_audio"):
+                calisma_klibi = calisma_klibi.set_audio(calisma_klibi.audio.volumex(katsayi))
+            elif hasattr(calisma_klibi.audio, "volumex") and hasattr(calisma_klibi, "with_audio"):
+                calisma_klibi = calisma_klibi.with_audio(calisma_klibi.audio.volumex(katsayi))
 
         try:
-            ses_var = calisma_klibi.audio is not None and not sesi_kapat
+            ses_var = calisma_klibi.audio is not None and not sesi_kapat and ses_seviyesi > 0
             calisma_klibi.write_videofile(
                 hedef_yol,
                 codec="libx264",

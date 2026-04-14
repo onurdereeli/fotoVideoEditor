@@ -42,6 +42,7 @@ class VideoPlayerController:
         self._state_callback: Optional[Callable[[], None]] = None
         self._poll_job: Optional[str] = None
         self._render_target: Optional[tk.Misc] = None
+        self._volume = 100
 
     def bind_ui(self, host: tk.Misc, callback: Callable[[], None]) -> None:
         """Bind a Tk host and refresh callback for safe polling updates."""
@@ -77,6 +78,7 @@ class VideoPlayerController:
             self._player = self._instance.media_player_new()
             self._player.set_media(self._media)
             self._bind_player_to_target()
+            self._apply_volume()
             self.state.status_text = "Video yüklendi. Oynatmaya hazır."
             self._update_timing_from_player()
         except Exception as exc:
@@ -109,6 +111,7 @@ class VideoPlayerController:
 
         try:
             self._bind_player_to_target()
+            self._apply_volume()
             self._player.play()
             self.state.is_playing = True
             self.state.status_text = "Video oynatılıyor."
@@ -185,6 +188,19 @@ class VideoPlayerController:
             self.state.status_text = f"Konum güncellenemedi: {exc}"
 
         self._notify_state_changed()
+
+    def set_volume(self, volume: int) -> None:
+        """Update playback volume for live preview."""
+        self._volume = max(0, min(int(volume), 200))
+        self._apply_volume()
+
+    def _apply_volume(self) -> None:
+        if self._player is None:
+            return
+        try:
+            self._player.audio_set_volume(self._volume)
+        except Exception:
+            pass
 
     def _start_polling(self) -> None:
         if self._ui_host is None:
@@ -389,6 +405,9 @@ class VideoPlayer(ttk.Frame):
     def stop(self) -> None:
         self.controller.stop()
         self._refresh_ui()
+
+    def set_volume(self, volume: int) -> None:
+        self.controller.set_volume(volume)
 
     def _on_seek_press(self, _event=None) -> None:
         self._slider_dragging = True
