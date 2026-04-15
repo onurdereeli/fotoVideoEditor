@@ -43,6 +43,7 @@ class VideoPlayerController:
         self._poll_job: Optional[str] = None
         self._render_target: Optional[tk.Misc] = None
         self._volume = 100
+        self._playback_rate = 1.0
 
     def bind_ui(self, host: tk.Misc, callback: Callable[[], None]) -> None:
         """Bind a Tk host and refresh callback for safe polling updates."""
@@ -112,6 +113,7 @@ class VideoPlayerController:
         try:
             self._bind_player_to_target()
             self._apply_volume()
+            self._apply_playback_rate()
             self._player.play()
             self.state.is_playing = True
             self.state.status_text = "Video oynatılıyor."
@@ -194,11 +196,24 @@ class VideoPlayerController:
         self._volume = max(0, min(int(volume), 200))
         self._apply_volume()
 
+    def set_playback_rate(self, rate: float) -> None:
+        """Update playback speed for live preview when backend supports it."""
+        self._playback_rate = max(0.25, min(float(rate), 4.0))
+        self._apply_playback_rate()
+
     def _apply_volume(self) -> None:
         if self._player is None:
             return
         try:
             self._player.audio_set_volume(self._volume)
+        except Exception:
+            pass
+
+    def _apply_playback_rate(self) -> None:
+        if self._player is None:
+            return
+        try:
+            self._player.set_rate(self._playback_rate)
         except Exception:
             pass
 
@@ -408,6 +423,9 @@ class VideoPlayer(ttk.Frame):
 
     def set_volume(self, volume: int) -> None:
         self.controller.set_volume(volume)
+
+    def set_playback_rate(self, rate: float) -> None:
+        self.controller.set_playback_rate(rate)
 
     def _on_seek_press(self, _event=None) -> None:
         self._slider_dragging = True
